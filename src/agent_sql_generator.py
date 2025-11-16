@@ -203,7 +203,7 @@ builder.set_entry_point("generate_sql")
 builder.add_edge("generate_sql", "run_sql")
 builder.add_edge("run_sql", END)
 
-agent_app = builder.compile()
+sql_agent_app = builder.compile()
 
 
 # =====================================================
@@ -217,7 +217,7 @@ if __name__ == "__main__":
         "question": sample_question
     }
 
-    result = agent_app.invoke(state)
+    result = sql_agent_app.invoke(state)
 
     print("Generated SQL:")
     print(result.get("sql"))

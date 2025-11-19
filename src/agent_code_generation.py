@@ -1,66 +1,120 @@
-# agent_code_generation.py
+# agent_code_generation.py — FINAL D VERSION (Row-count Aware)
 
 import json
 import pandas as pd
+import numpy as np
 from typing import TypedDict, Optional, Dict, Any
 
-from langchain.chat_models import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
-from langchain.schema.output_parser import StrOutputParser
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 
 from langgraph.graph import StateGraph, END
 
-# ----------------------------------------
-#  AGENT 2 STATE
-# ----------------------------------------
 
 class VizState(TypedDict):
-    df_json: str           # required input
+    df_json: str
     question: Optional[str]
     viz_code: Optional[str]
     error: Optional[str]
 
-
-# ----------------------------------------
-#  LLM FOR GENERATING VISUALIZATION CODE
-# ----------------------------------------
 
 llm = ChatOpenAI(
     model="gpt-4o-mini",
     temperature=0,
 )
 
+
+# ================================================================
+# FIXED PROMPT WITH ROW-COUNT LOGIC + REAL COLUMNS ONLY
+# ================================================================
 viz_prompt = ChatPromptTemplate.from_messages([
     (
         "system",
-        """You are a senior data visualization engineer.
+        """
+You are a senior Python data visualization engineer.
 
-You receive a pandas DataFrame (as JSON) and must generate ONLY Python code
-(using pandas, plotly, or matplotlib) that visualizes the data effectively.
+Your job is to generate CLEAN, EXECUTABLE Matplotlib code using REAL column names.
+The DataFrame is available as `df`.
 
-Rules:
-- MUST return ONLY Python code. No explanation.
-- MUST assume the DataFrame will be named `df` in the Streamlit environment.
-- Add all required imports for the code to run.
-- Choose the BEST visualization based on column types.
-- If categorical + numeric → bar chart.
-- If numeric + numeric → scatter or line.
-- If only numeric → histogram.
-- If many columns → table preview.
-- NEVER import pandas (already available).
-- You MAY import matplotlib.pyplot or plotly.express.
-- Keep code self-contained.
+STRICT RULES:
+---------------------------------------------------------
+❌ NEVER generate placeholder column names like:
+    'timestamp_column', 'numeric_column', 'category_column'
+❌ NEVER use select_dtypes placeholders
+❌ NEVER ask the user to replace anything
+❌ NEVER output backticks or comments
+❌ NEVER use Streamlit
+
+✔ ALWAYS use REAL columns only from the provided list {columns}
+✔ ALWAYS return only valid executable code
+✔ ALWAYS call:
+       plt.figure()
+       ...
+       plt.tight_layout()
+
+---------------------------------------------------------
+DATETIME NORMALIZATION (MANDATORY):
+---------------------------------------------------------
+Identify datetime-like columns:
+- Columns with dtype integer AND values > 1e9 (epoch timestamps)
+- Columns that pandas can parse as dates
+Then convert:
+    if v > 1e12 → unit='ns'
+    elif v > 1e10 → unit='ms'
+    else → unit='s'
+Sort the DataFrame by that datetime column.
+
+---------------------------------------------------------
+ROW COUNT LOGIC (MANDATORY):
+---------------------------------------------------------
+Use len(df):
+
+If len(df) == 0:
+    Create a table-like fallback using ax.table.
+
+If len(df) == 1:
+    • If time-series → scatter plot with a single point
+    • If categorical → bar with 1 bar
+    • If numeric only → hist with 1 bucket
+
+If len(df) == 2:
+    • If time-series → line plot with markers
+    • If numeric → scatter
+
+If len(df) >= 3:
+    • Use appropriate chart type normally.
+
+---------------------------------------------------------
+CHART TYPE DETECTION:
+---------------------------------------------------------
+Priority:
+1. If question mentions: plot, chart, line, trend → LINE if datetime present
+2. If question mentions: distribution, percentage, proportion → PIE
+3. If categorical + numeric → BAR
+4. If 2 numeric → SCATTER
+5. If 1 numeric → HIST
+6. Else → TABLE fallback
+
+---------------------------------------------------------
+RETURN ONLY EXECUTABLE PYTHON CODE.
 """
     ),
-    ("human", "DataFrame columns: {columns}\nSample rows: {preview}\nGenerate visualization code:"),
+    (
+        "human",
+        """
+User question: {question}
+
+Columns: {columns}
+Preview rows: {preview}
+
+Generate only Python code using REAL column names.
+"""
+    )
 ])
 
 viz_chain = viz_prompt | llm | StrOutputParser()
 
-
-# ----------------------------------------
-#  NODES
-# ----------------------------------------
 
 def node_generate_viz(state: Dict[str, Any]) -> Dict[str, Any]:
     try:
@@ -71,8 +125,9 @@ def node_generate_viz(state: Dict[str, Any]) -> Dict[str, Any]:
         columns = list(df.columns)
 
         code = viz_chain.invoke({
+            "question": state.get("question", ""),
             "columns": columns,
-            "preview": preview,
+            "preview": preview
         })
 
         return {
@@ -91,10 +146,6 @@ def node_generate_viz(state: Dict[str, Any]) -> Dict[str, Any]:
         }
 
 
-# ----------------------------------------
-#  GRAPH DEFINITION
-# ----------------------------------------
-
 builder = StateGraph(VizState)
 builder.add_node("generate_viz", node_generate_viz)
 builder.set_entry_point("generate_viz")
@@ -102,5 +153,4 @@ builder.add_edge("generate_viz", END)
 
 viz_agent_app = builder.compile()
 
-# Expose the chain for Streamlit
 __all__ = ["viz_agent_app"]

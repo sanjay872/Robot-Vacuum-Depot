@@ -2,11 +2,11 @@ from __future__ import annotations
 from typing import TypedDict, Optional
 import os
 import json
-import pandas as pd
-from sqlalchemy import text
+import re
 
+import pandas as pd
+import polars as pl
 from sqlalchemy import create_engine
-from sqlalchemy.engine.base import Engine
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -25,7 +25,7 @@ class AgentState(TypedDict, total=False):
 
 
 # =====================================================
-# 2. POSTGRES + SQLALCHEMY ENGINE
+# 2. POSTGRES ENGINE SETUP
 # =====================================================
 
 PG_HOST = os.getenv("PG_HOST", "localhost")
@@ -43,39 +43,35 @@ engine = create_engine(DATABASE_URL)
 
 
 # =====================================================
-# 3. DYNAMIC SCHEMA LOADING
+# 3. SCHEMA LOADING
 # =====================================================
 
 def generate_schema_json() -> str:
     """
-    Reads schema metadata dynamically from PostgreSQL
-    and returns a JSON structure for LLM prompt.
+    Loads the live PostgreSQL schema and returns it as JSON.
     """
     query = """
-    SELECT 
-        table_name,
-        column_name,
-        data_type
+    SELECT table_name, column_name, data_type
     FROM information_schema.columns
     WHERE table_schema = 'robot_vacuum'
     ORDER BY table_name, ordinal_position;
     """
 
     df = pd.read_sql_query(query, engine)
+    schema: dict[str, dict[str, str]] = {}
 
-    schema = {}
     for table in df["table_name"].unique():
-        cols = df[df["table_name"] == table]
+        table_cols = df[df["table_name"] == table]
         schema[table] = {
             row["column_name"]: row["data_type"]
-            for _, row in cols.iterrows()
+            for _, row in table_cols.iterrows()
         }
 
     return json.dumps(schema, indent=2)
 
 
 # =====================================================
-# 4. LLM SETUP + UPDATED PROMPT
+# 4. LLM + PROMPT
 # =====================================================
 
 llm = ChatOpenAI(
@@ -85,73 +81,167 @@ llm = ChatOpenAI(
 )
 
 sql_prompt = ChatPromptTemplate.from_messages([
-("system",
-"""
-You are a PostgreSQL SQL expert. Always follow these rules:
+    ("system",
+     """
+You are a PostgreSQL expert. Convert natural language into a correct SQL query.
 
-1. Fully qualify ONLY table names:
-      robot_vacuum.orders
-      robot_vacuum.product
-      robot_vacuum.customer
-   → NEVER write robot_vacuum.table.column  
-     (this is invalid).
+STRICT RULES:
+1. Use ONLY these tables (schema robot_vacuum):
+      - orders
+      - customer
+      - product
+      - review
+      - manufacturer
+      - warehouse
+      - shipment
+   (exact list depends on actual schema; use only what is in the schema JSON below)
 
-   Correct:
-      robot_vacuum.orders
-      orders.productid
+2. Use only columns that exist in the schema JSON.
+3. Table names MUST be referenced as:
+        robot_vacuum.orders
+        robot_vacuum.customer
+        robot_vacuum.product
+        robot_vacuum.review
+        robot_vacuum.manufacturer
+        robot_vacuum.warehouse
+   (only if they exist in the schema).
 
-   Incorrect:
-      robot_vacuum.orders.productid
+4. Column references NEVER include the schema:
+        orders.productid       ✔
+        robot_vacuum.orders.productid   ✘
 
-2. Use table aliases when helpful.
+5. ALWAYS produce a single SELECT query.
+6. Include proper JOIN conditions when using multiple tables.
+7. Never hallucinate columns.
+8. delayed deliveries → LOWER(orders.deliverystatus) LIKE '%delayed%'
+9. Chicago → orders.deliveryzipcode LIKE '606%'
 
-3. ONLY generate a single SELECT query.
-   - No comments
-   - No non-SELECT SQL
-
-4. Use only columns present in the schema.
-
-5. For delayed deliveries:
-      LOWER(orders.deliverystatus) LIKE '%delayed%'
-
-6. For Chicago ZIP codes:
-      orders.deliveryzipcode LIKE '606%'
-
----------------------------------------------------------
-LIVE DATABASE SCHEMA:
+LIVE DATABASE SCHEMA (use this as ground truth):
 {schema_json}
----------------------------------------------------------
 
-Return ONLY the SQL query.
-""")
-,
-("human", "Question: {question}\nSQL:")
+Return ONLY the SQL. No commentary. No markdown. No backticks.
+"""
+     ),
+    ("human",
+     "Convert this question into SQL:\n\n{question}\n\nSQL:")
 ])
 
 sql_chain = sql_prompt | llm | StrOutputParser()
 
 
+# =====================================================
+# 5. SQL CLEANING + BASIC SHAPE CHECKS
+# =====================================================
+
 def clean_sql_output(raw: str) -> str:
-    """Cleans markdown fences and validates SELECT-only."""
+    """
+    Strip markdown fences, backticks, trailing semicolons, and extra text.
+    """
     sql = raw.strip()
 
-    if sql.lower().startswith("```sql"):
-        sql = sql[6:]
+    # Remove code fences
     if sql.startswith("```"):
-        sql = sql[3:]
-    if sql.endswith("```"):
-        sql = sql[:-3]
+        parts = sql.split("```")
+        if len(parts) >= 2:
+            sql = parts[1]
+    sql = sql.replace("```sql", "").replace("```", "")
+    sql = sql.replace("`", "").strip()
 
-    sql = sql.strip().rstrip(";")
+    # Remove trailing semicolon
+    sql = sql.rstrip(";").strip()
 
-    if not sql.lower().lstrip().startswith("select"):
-        raise ValueError(f"LLM returned non-SELECT SQL:\n{sql}")
+    if not sql.lower().startswith("select"):
+        raise ValueError(f"LLM returned invalid SQL (must start with SELECT): {sql}")
 
     return sql
 
 
+def _sql_shape_error(sql: str) -> Optional[str]:
+    """
+    Cheap static checks on the SQL shape. Returns an error string if something
+    looks obviously wrong, otherwise None.
+    """
+    s = sql.strip()
+    lower = s.lower()
+
+    if not lower.startswith("select"):
+        return "SQL must start with SELECT."
+
+    if " delete " in lower or " update " in lower or " insert " in lower:
+        return "Only SELECT queries are allowed."
+
+    # Parentheses balance
+    depth = 0
+    for ch in s:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth < 0:
+                return "Unbalanced parentheses."
+    if depth != 0:
+        return "Unbalanced parentheses."
+
+    if "count()" in lower:
+        return "COUNT() is missing an argument; use COUNT(*) or COUNT(col)."
+
+    return None
+
+
 # =====================================================
-# 5. LANGGRAPH NODES
+# 6. SCHEMA SEMANTIC CHECK — CATCH BAD COLUMNS
+# =====================================================
+
+def _schema_semantic_error(sql: str, schema_dict: dict) -> Optional[str]:
+    """
+    Check if columns used in the SQL are compatible with the tables used.
+
+    If a column is referenced but none of the tables in FROM/JOIN contain it,
+    we flag it as a semantic schema error.
+
+    Example: manufacturerid used, but only robot_vacuum.review is in FROM.
+    """
+    lower = sql.lower()
+
+    # 1) Detect which tables are used in the query
+    used_tables: set[str] = set()
+    for table_name in schema_dict.keys():
+        t_lower = table_name.lower()
+        if f"robot_vacuum.{t_lower}" in lower or re.search(rf"\\b{re.escape(t_lower)}\\b", lower):
+            used_tables.add(table_name)
+
+    # If we couldn't detect tables, don't block on this check
+    if not used_tables:
+        return None
+
+    # 2) Build column -> set(tables) mapping from schema
+    col_to_tables: dict[str, set[str]] = {}
+    for tname, cols in schema_dict.items():
+        for col_name in cols.keys():
+            col_to_tables.setdefault(col_name.lower(), set()).add(tname)
+
+    # 3) For each known column name, see if it appears in SQL.
+    bad_cols: list[str] = []
+    for col_name, tables_having in col_to_tables.items():
+        pattern = rf"\\b{re.escape(col_name.lower())}\\b"
+        if re.search(pattern, lower):
+            # Column used: ensure at least one used table actually has it
+            if used_tables.isdisjoint(tables_having):
+                bad_cols.append(col_name)
+
+    if bad_cols:
+        return (
+            "Some columns are referenced in the SQL but do not exist in any of the "
+            f"tables used in FROM/JOIN: {sorted(set(bad_cols))}. "
+            "You likely forgot to JOIN the appropriate table(s) from the schema "
+            "or selected the wrong source table."
+        )
+
+    return None
+
+
+# =====================================================
+# 7. MAIN SQL GENERATION NODE (WITH RETRIES)
 # =====================================================
 
 def node_generate_sql(state: AgentState) -> AgentState:
@@ -161,41 +251,95 @@ def node_generate_sql(state: AgentState) -> AgentState:
 
     try:
         schema_json = generate_schema_json()
-
-        raw_sql = sql_chain.invoke({
-            "question": question,
-            "schema_json": schema_json
-        })
-
-        sql = clean_sql_output(raw_sql)
-
-        return {**state, "sql": sql, "error": None}
+        schema_dict = json.loads(schema_json)
     except Exception as e:
-        return {**state, "error": f"SQL generation failed: {e}"}
+        return {**state, "error": f"Failed to load database schema: {e}"}
 
+    last_error = None
+    current_question = question
+
+    for attempt in range(1, 4):
+        try:
+            raw_sql = sql_chain.invoke({
+                "question": current_question,
+                "schema_json": schema_json,
+            })
+
+            cleaned = clean_sql_output(raw_sql)
+
+            shape_err = _sql_shape_error(cleaned)
+            semantic_err = _schema_semantic_error(cleaned, schema_dict)
+
+            if shape_err is None and semantic_err is None:
+                # Looks good
+                return {**state, "sql": cleaned, "error": None}
+
+            # Compose error message
+            msgs = []
+            if shape_err:
+                msgs.append(shape_err)
+            if semantic_err:
+                msgs.append(semantic_err)
+            combined_msg = " | ".join(msgs)
+            last_error = combined_msg
+
+            # Ask LLM to fix it with detailed feedback
+            current_question = (
+                f"{question}\n\n"
+                f"The previous SQL you generated was invalid because: {combined_msg}\n"
+                f"Here is the invalid SQL:\n{cleaned}\n\n"
+                "Please regenerate a correct PostgreSQL SELECT query that strictly follows the schema, "
+                "uses only existing columns, and includes proper joins between the relevant tables."
+            )
+
+        except Exception as e:
+            last_error = str(e)
+            current_question = (
+                f"{question}\n\n"
+                f"Previous SQL generation attempt failed with error: {e}.\n"
+                "Please try again with a correct PostgreSQL SELECT query."
+            )
+
+    # If we reach here, all attempts failed
+    return {
+        **state,
+        "sql": None,
+        "error": f"SQL generation failed after multiple attempts. Last error: {last_error}",
+    }
+
+
+# =====================================================
+# 8. SQL EXECUTION NODE
+# =====================================================
 
 def node_run_sql(state: AgentState) -> AgentState:
-    sql = state.get("sql")
-
-    if not sql:
-        return state
-
     if state.get("error"):
+        # If there is already an error, do not run SQL
         return state
+
+    sql = state.get("sql")
+    if not sql:
+        return {**state, "error": "No SQL to execute."}
 
     try:
-        df = pd.read_sql_query(text(sql), engine)
-        return {**state, "df": df, "error": None}
+        df_pl = pl.read_database(sql, connection=engine)
+        df_pd = df_pl.to_pandas()
+
+        if df_pd.empty:
+            return {**state, "df": df_pd, "error": "SQL executed successfully but returned no rows."}
+
+        return {**state, "df": df_pd, "error": None}
+
     except Exception as e:
+        # Execution-level error (e.g., permissions, type mismatch, etc.)
         return {**state, "error": f"SQL execution failed: {e}"}
 
 
 # =====================================================
-# 6. BUILD LANGGRAPH
+# 9. BUILD GRAPH
 # =====================================================
 
 builder = StateGraph(AgentState)
-
 builder.add_node("generate_sql", node_generate_sql)
 builder.add_node("run_sql", node_run_sql)
 
@@ -207,26 +351,14 @@ sql_agent_app = builder.compile()
 
 
 # =====================================================
-# 7. LOCAL TEST
+# 10. LOCAL TEST
 # =====================================================
 
 if __name__ == "__main__":
-    sample_question = "Which products have the highest number of delayed deliveries in Chicago?"
-
-    state = {
-        "question": sample_question
-    }
-
-    result = sql_agent_app.invoke(state)
-
-    print("Generated SQL:")
-    print(result.get("sql"))
-
-    print("\nError:", result.get("error"))
-
-    df = result.get("df")
-    if isinstance(df, pd.DataFrame):
-        print("\nResult:")
-        print(df.head())
-    else:
-        print("No DataFrame returned.")
+    sample = "Among all manufacturers, who has the best average review rating for their products?"
+    result = sql_agent_app.invoke({"question": sample})
+    print("SQL:", result.get("sql"))
+    print("Error:", result.get("error"))
+    df_res = result.get("df")
+    if isinstance(df_res, pd.DataFrame):
+        print(df_res.head())

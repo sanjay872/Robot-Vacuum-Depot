@@ -5,6 +5,10 @@
 from typing import TypedDict, Optional
 import ast
 from langgraph.graph import StateGraph, END
+from dotenv import load_dotenv
+import os
+
+load_dotenv()  # Automatically loads .env from current directory
 
 
 class ValidatorState(TypedDict, total=False):

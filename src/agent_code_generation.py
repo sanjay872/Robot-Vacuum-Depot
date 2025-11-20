@@ -11,6 +11,11 @@ from langchain_core.output_parsers import StrOutputParser
 
 from langgraph.graph import StateGraph, END
 
+from dotenv import load_dotenv
+import os
+
+load_dotenv()  # Automatically loads .env from current directory
+
 
 class VizState(TypedDict):
     df_json: str

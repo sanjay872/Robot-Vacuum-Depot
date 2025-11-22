@@ -11,246 +11,140 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 
-st.set_page_config(page_title="AI SQL → Viz Pipeline (Auto)", layout="wide")
-st.title("🤖 AI SQL → Table / Chart (Fully Automated Pipeline)")
+# ----------------------------------------------------------
+# PAGE CONFIG
+# ----------------------------------------------------------
+st.set_page_config(page_title="AI Data Analyst", layout="wide")
+
+st.markdown("""
+    <style>
+        .stChatMessage { max-width: 70%; }
+        .st-emotion-cache-4oy321 { background-color: transparent !important; }
+    </style>
+""", unsafe_allow_html=True)
+
+st.title("🤖 AI SQL + Visualization Agent")
 
 
-# =====================================================
-# 1. LLM-BASED INTENT CLASSIFIER (TABLE vs CHART)
-# =====================================================
-
-intent_llm = ChatOpenAI(
-    model="gpt-4o-mini",
-    temperature=0,
-)
+# ----------------------------------------------------------
+# INTENT CLASSIFIER (chart vs table)
+# ----------------------------------------------------------
+intent_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 intent_prompt = ChatPromptTemplate.from_messages([
     (
         "system",
         """
-"You are an intent classifier for analytics questions.
+Classify analytics questions into:
+- 'chart' → comparison, distribution, trends, grouped metrics
+- 'table' → lookup, ranking, listing
 
-Your job:
-- Decide if the user wants a CHART visualization or a TABLE/TEXT answer.
-
-CHART indicators (very important):
-- Any request involving comparison across categories
-- Words like: plot, chart, graph, visualize, draw, show trends
-- Words like: compare, comparison, vs, versus
-- Phrases like: average by X, cost efficiency, grouped by, distribution
-- Any question asking to evaluate or compare metrics across groups
-- Any question involving categories + numeric values
-- Any question where a bar chart or line chart would naturally be used
-
-TABLE indicators:
-- Listing entities
-- Ranking entities
-- “Which”, “who”, “what” without comparison intent
-- Pure textual lookup or selection
-
-Output:
-Return EXACTLY one word:
-    chart
-or
-    table
-No punctuation. No explanation."
+Return ONLY: chart  OR  table.
 """
     ),
-    (
-        "human",
-        "User question: {question}\n\nYour answer (chart/table only):"
-    )
+    ("human", "{question}")
 ])
 
 intent_chain = intent_prompt | intent_llm | StrOutputParser()
 
 
-def classify_intent(question: str) -> str:
-    """Returns 'chart' or 'table' based on LLM classifier."""
+def classify_intent(question):
     try:
-        raw = intent_chain.invoke({"question": question})
-        intent = raw.strip().lower()
-        if "chart" in intent:
-            return "chart"
-        return "table"
-    except Exception:
-        # Failsafe: default to table
+        label = intent_chain.invoke({"question": question}).strip().lower()
+        return "chart" if "chart" in label else "table"
+    except:
         return "table"
 
 
-# =====================================================
-# 2. SESSION STATE HELPER
-# =====================================================
+# ----------------------------------------------------------
+# CHAT INPUT
+# ----------------------------------------------------------
+user_query = st.chat_input("Ask your data question…")
 
-def ensure_session_keys():
-    defaults = {
-        "df_json": None,
-        "sql_code": None,
-        "viz_code": None,
-        "validation": None,
-        "image_bytes": None,
-        "last_intent": None,
-        "last_error": None,
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
+if user_query:
+    # Show user bubble
+    st.chat_message("user").write(user_query)
 
+    # Start assistant bubble
+    assistant = st.chat_message("assistant")
+    with assistant:
 
-ensure_session_keys()
+        # Step 1 — SQL Agent
+        assistant.write("🔵 **Step 1: Generating SQL & Querying Data…**")
+        sql_state = sql_agent_app.invoke({"question": user_query})
 
-
-# =====================================================
-# 3. USER INPUT
-# =====================================================
-
-question = st.text_input("Ask a question about the robot vacuum database:")
-
-with st.expander("📦 Session State Snapshot (debug)"):
-    st.json({k: (str(v)[:200] + ("..." if len(str(v)) > 200 else "")) for k, v in st.session_state.items()})
-
-
-# =====================================================
-# 4. MAIN BUTTON — FULL PIPELINE
-# =====================================================
-
-if st.button("Run AI Query"):
-
-    st.session_state.last_error = None
-    st.session_state.image_bytes = None
-
-    if not question.strip():
-        st.warning("Please enter a natural language question first.")
-    else:
-        # ------------------------------------------
-        # STEP 1: Agent 1 — SQL + DataFrame
-        # ------------------------------------------
-        st.subheader("🔵 Step 1 — Generating SQL and DataFrame")
-
-        sql_state = sql_agent_app.invoke({"question": question})
-
-        sql_code = sql_state.get("sql")
-        df = sql_state.get("df")
-        error = sql_state.get("error")
-
-        with st.expander("🔍 Generated SQL (Agent 1)"):
-            st.code(sql_code or "No SQL generated.", language="sql")
-
-        if error:
-            st.error(f"Agent 1 error: {error}")
-            st.session_state.last_error = error
+        if sql_state.get("error"):
+            assistant.error(sql_state["error"])
             st.stop()
 
-        if not isinstance(df, pd.DataFrame):
-            st.error("Agent 1 did not return a valid DataFrame.")
-            st.session_state.last_error = "No DataFrame from Agent 1."
+        sql_code = sql_state["sql"]
+        df = sql_state["df"]
+
+        assistant.code(sql_code, language="sql")
+
+        if df is None or df.empty:
+            assistant.warning("Query executed but returned no rows.")
             st.stop()
 
-        if df.empty:
-            st.warning("Query executed but returned no rows.")
-        st.dataframe(df)
+        assistant.write("### 📄 Query Result")
+        assistant.dataframe(df)
 
-        st.session_state.df_json = df.to_json(orient="records")
-        st.session_state.sql_code = sql_code
+        df_json = df.to_json(orient="records")
 
-        # ------------------------------------------
-        # STEP 2: Classify intent (TABLE vs CHART)
-        # ------------------------------------------
-        st.subheader("🧠 Step 2 — Classifying Intent (Table vs Chart)")
-        intent = classify_intent(question)
-        st.session_state.last_intent = intent
 
-        st.write(f"**Classifier decision:** `{intent}`")
+        # Step 2 — Intent Classification
+        assistant.write("🧠 **Step 2: Understanding Your Intent…**")
+        intent = classify_intent(user_query)
+        assistant.write(f"**Intent:** `{intent}`")
 
         if intent == "table":
-            st.success("📄 Using TABLE/TEXT output — showing DataFrame above.")
-            st.stop()  # No need to run viz pipeline
+            assistant.success("📄 Table output selected — done!")
+            st.stop()
 
-        # ------------------------------------------
-        # STEP 3: Agent 2 — Generate Visualization Code
-        # ------------------------------------------
-        st.subheader("🟣 Step 3 — Generating Visualization Code (Agent 2)")
 
+        # Step 3 — Viz Code Generation
+        assistant.write("🟣 **Step 3: Generating Visualization Code…**")
         viz_state = viz_agent_app.invoke({
-            "df_json": st.session_state.df_json,
-            "question": question,
+            "df_json": df_json,
+            "question": user_query
         })
 
-        viz_code = viz_state.get("viz_code")
-        viz_error = viz_state.get("error")
-
-        with st.expander("🎨 Visualization Code (Agent 2)"):
-            st.code(viz_code or "", language="python")
-
-        if viz_error:
-            st.error(f"Agent 2 error: {viz_error}")
-            st.session_state.last_error = viz_error
+        if viz_state.get("error"):
+            assistant.error(viz_state["error"])
             st.stop()
 
-        if not viz_code:
-            st.error("Agent 2 returned empty visualization code.")
-            st.session_state.last_error = "Empty viz code from Agent 2."
-            st.stop()
+        viz_code = viz_state["viz_code"]
+        assistant.code(viz_code, language="python")
 
-        st.session_state.viz_code = viz_code
 
-        # ------------------------------------------
-        # STEP 4: Agent 3 — Validate Code
-        # ------------------------------------------
-        st.subheader("🟠 Step 4 — Validating Visualization Code (Agent 3)")
-
+        # Step 4 — Code Validation
+        assistant.write("🟠 **Step 4: Validating Code…**")
         validation = validator_app.invoke({
-            "code": st.session_state.viz_code,
-            "df_json": st.session_state.df_json,
+            "code": viz_code,
+            "df_json": df_json
         })
 
-        st.session_state.validation = validation
-
-        with st.expander("🧪 Validator Output (Agent 3)"):
-            st.json(validation)
-
-        if validation.get("is_valid"):
-            st.success("✅ Visualization code is VALID.")
-        else:
-            st.error("❌ Visualization code is NOT valid.")
-            st.write(validation.get("feedback", "No feedback provided."))
-            st.session_state.last_error = "Code marked invalid by Agent 3."
-            # Fallback: keep table only
-            st.info("Showing table above as fallback.")
+        if not validation.get("is_valid"):
+            assistant.error("❌ Visualization code is invalid.")
+            assistant.write(validation.get("feedback"))
             st.stop()
 
-        # ------------------------------------------
-        # STEP 5: Agent 4 — Execute Code
-        # ------------------------------------------
-        st.subheader("🟢 Step 5 — Executing Visualization Code (Agent 4)")
+        assistant.success("✔ Code is valid.")
 
-        run_result = runner_app.invoke({
-            "code": st.session_state.viz_code,
-            "df_json": st.session_state.df_json,
+
+        # Step 5 — Execute Visualization
+        assistant.write("🟢 **Step 5: Executing Code…**")
+        result = runner_app.invoke({
+            "code": viz_code,
+            "df_json": df_json
         })
 
-        if run_result.get("error"):
-            st.error("Execution error from Agent 4:")
-            st.text(run_result["error"])
-            st.session_state.image_bytes = None
-            st.session_state.last_error = run_result["error"]
-            st.info("Showing table above as fallback.")
+        if result.get("error"):
+            assistant.error(result["error"])
+            st.stop()
+
+        img = result.get("image_bytes")
+        if img:
+            assistant.image(img, caption="📊 Final Visualization", use_column_width=True)
         else:
-            image_bytes = run_result.get("image_bytes")
-            st.session_state.image_bytes = image_bytes
-
-            if image_bytes:
-                st.success("✅ Visualization executed successfully.")
-                st.subheader("📊 Final Visualization Output")
-                st.image(image_bytes, caption="Rendered by multi-agent pipeline", use_column_width=True)
-            else:
-                st.warning("Agent 4 did not return an image. Showing table only as fallback.")
-                st.session_state.last_error = "No image_bytes from Agent 4."
-
-
-# =====================================================
-# 5. OPTIONAL: Show last successful visualization
-# =====================================================
-if st.session_state.get("image_bytes"):
-    with st.expander("🖼 Last Rendered Visualization"):
-        st.image(st.session_state.image_bytes, caption="Last successful output", use_column_width=True)
+            assistant.warning("Code ran, but no image produced.")

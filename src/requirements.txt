@@ -1,12 +1,22 @@
+# ---------- Core DB + Data ----------
 psycopg2-binary
 pandas
-streamlit
-plotly
+polars
+python-dotenv
+
+# ---------- Visualization ----------
 matplotlib
+plotly
+tabulate
+
+# ---------- Streamlit ----------
+streamlit
+
+# ---------- LangChain Ecosystem ----------
 langchain
-langchain-community
+langchain-core
+langchain-community>=0.3.0
+langchain-experimental
 langchain-openai
 langgraph
 openai
-python-dotenv
-polars

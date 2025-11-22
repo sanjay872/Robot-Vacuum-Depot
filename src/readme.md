@@ -1,262 +1,232 @@
 # 🤖 AI-Powered SQL Query & Visualization System
+Fully Automated Multi-Agent Analytics Pipeline
 
-Multi-Agent LangGraph + Streamlit Application
-PostgreSQL • Polars • LangChain • LangGraph • Streamlit
+PostgreSQL • Polars • LangChain • LangGraph • Streamlit • PythonREPLTool
 
 # 📌 Overview
 
-## This project implements a fully automated AI analytics pipeline using:
+This project implements an end-to-end AI analytics assistant capable of:
 
-- PostgreSQL for relational database storage
+- Understanding natural-language questions
 
-- Polars for fast CSV ingestion
+- Generating correct SQL queries
 
-- LangChain + LangGraph for orchestrating multiple AI agents
+- Executing SQL against a PostgreSQL database
 
-- Five-agent architecture for query → SQL → visualization → validation → execution
+- Creating visualization code (Matplotlib/Plotly)
 
-- Streamlit for final UI output
+- Validating the generated code
 
-    The system takes any natural-language question, converts it into a valid SQL query, retrieves data from PostgreSQL, generates visualization code, validates and executes that code, and displays the final result (chart/table) inside a Streamlit application.
+- Executing the code safely in a sandbox
 
-- This project satisfies all requirements of the assignment:
+- Displaying tables/charts inside Streamlit
 
-    ✔ Create PostgreSQL tables in 3NF
+- The system uses a five-agent LangGraph architecture with strict validation, safety guards, and fully automated reasoning.
 
-    ✔ Load CSV into PostgreSQL using Polars
+This implementation meets all assignment requirements:
 
-    ✔ Build 5 AI agents
+✔ PostgreSQL schema designed in 3NF
 
-    ✔ Use LangGraph for agent orchestration
+✔ CSV loading with Polars
 
-    ✔ Display final output using Streamlit UI
+✔ AI agents for SQL, visualization, validation, execution
 
-    ✔ Ensure modular code across multiple files
+✔ LangGraph used for agent orchestration
+
+✔ Streamlit UI for final output
+
+✔ Modular, maintainable code across multiple files
 
 # 🧠 Multi-Agent Architecture
 
-Your system uses a 5-agent LangGraph pipeline:
+Your system is composed of five specialized agents running in a LangGraph workflow:
 
-## Agent 1 — SQL Generator
+## Agent 1 - SQL Generator
 
 Input: Natural-language question
-Output: SQL + pandas DataFrame
+Output: SQL query + DataFrame
 
-Reads DB schema dynamically
+Capabilities:
 
-Converts natural-language question → SQL
+Dynamically reads the live DB schema
 
-Ensures syntactic correctness
+Converts NL → valid PostgreSQL SQL
 
-Executes SQL using Polars + PostgreSQL
+Ensures syntactic + semantic correctness
 
-Returns DataFrame
+Uses Polars + PostgreSQL for fast execution
 
 📄 File: src/agent_sql_generator.py
 
-## Agent 2 — Visualization Code Generator
+## Agent 2 - Visualization Code Generator
 
 Input: DataFrame + user question
-Output: Safe, executable Matplotlib code
+Output: Pure, safe Matplotlib code
 
-Features:
+Capabilities:
 
-Row-count–aware (1-point, 2-point, 3+ handling)
+Detects numeric vs category columns
 
-Auto-detects datetimes
+Detects timestamps and converts automatically
 
-Only uses real column names
+Avoids placeholders and invalid references
 
-Chooses correct chart type (line, bar, pie, scatter, hist)
+Selects correct chart type:
 
-No placeholders, no invalid code
+Line, bar, pie, scatter, histogram
+
+Generates PythonREPL-ready code
 
 📄 File: src/agent_code_generation.py
 
-## Agent 3 — Code Validator
+## Agent 3 - Visualization Code Validator
 
 Input: Visualization code + DataFrame JSON
-Output: JSON verdict + feedback
+Output: JSON verdict {is_valid, feedback}
 
-Ensures:
+Capabilities:
 
-Only real DataFrame columns used
+Ensures no missing columns
 
-Code is syntactically valid
+Ensures executable Python syntax
 
-No unsafe operations
+Ensures safe visualization-only operations
 
-Output strictly JSON (no markdown)
+JSON-only output (strict schema)
 
 📄 File: src/agent_code_validator.py
 
-## Agent 4 — Secure Code Runner
+## Agent 4 - Secure Code Runner (Python REPL)
 
-Input: Validated visualization code
+Input: Validated Python code
 Output: PNG image bytes
 
-Features:
+Capabilities:
 
-Blocks unsafe imports (os, subprocess, exec, eval, etc.)
+Sandboxed execution via PythonREPLTool
 
-Executes code in sandboxed namespace
+No filesystem or OS access
 
-Captures Matplotlib output as PNG
+Extracts Matplotlib/Plotly figures
 
-Prevents filesystem and system access
+Returns chart as PNG for Streamlit
 
 📄 File: src/agent_code_runner.py
 
-## Agent 5 — Streamlit App (UI Layer)
+## Agent 5 - Streamlit Application (UI Layer)
 
-Input: User question
-Output: Full pipeline execution with UI
+Input: User natural-language question
+Output: Complete analytics response
 
-UI Displays:
+UI Features:
+
+ChatGPT-style interface
+
+Shows:
 
 Generated SQL
 
-DataFrame preview
+DataFrame
 
 Visualization code
 
-Validation results
+Validator result
 
 Final chart/table
 
-📄 File: src/streamlit_sql_agent.py
+Fully automated pipeline
 
+📄 File: src/streamlit_sql_agent.py
 
 # 🔐 Environment Variables (.env Setup)
 
-The system loads environment variables using python-dotenv.
+The system uses python-dotenv.
 
-Create .env in src/:
+Create a .env file inside src/.
 
-```
-PG_HOST=localhost
-PG_PORT=5433
-PG_USER=postgres
-PG_PASSWORD=admin
-PG_DB=robot_vacuum
+A template is provided:
 
-OPENAI_API_KEY=sk-xxxx
-```
+📄 .env.example
 
-Refer .env.example for variable name:
-
-```
-PG_HOST=localhost
-PG_PORT=5433
-PG_USER=postgres
-PG_PASSWORD=admin
-PG_DB=robot_vacuum
+```bash
+PG_HOST=YOUR_HOST
+PG_PORT=YOUR_PORT
+PG_USER=YOUR_USER_NAME
+PG_PASSWORD=YOUR_PASSWORD
+PG_DB=YOUR_DB
 OPENAI_API_KEY=your_api_key_here
 ```
 
 # 🛠 Installation & Setup
-1️⃣ Create a virtual environment
-
-```bash
+1️⃣ Create Virtual Environment
 python -m venv venv
 venv\Scripts\activate      # Windows
-source venv/bin/activate   # macOS/Linux
-```
+source venv/bin/activate   # macOS / Linux
 
-2️⃣ Install dependencies
-
-```bash
+2️⃣ Install Dependencies
 pip install -r src/requirements.txt
-```
 
-3️⃣ Set up PostgreSQL
-
-Create database:
-
-```sql
+## Database Setup
+3️⃣ Create PostgreSQL database + schema
 CREATE DATABASE robot_vacuum;
 CREATE SCHEMA robot_vacuum;
-```
 
-4️⃣ Load CSV (Polars + SQL)
+4️⃣ Load CSV Using Polars
 
-Open the notebook and run it - src/create_table_and_load_CSV.ipynb
+Run:
+
+📄 src/create_table_and_load_CSV.ipynb
 
 This will:
 
-Create all tables in 3NF
+Create all tables (3NF)
 
 Load CSV using Polars
 
 Insert into PostgreSQL
 
-## 🚀 Running the Full Application
+🚀 Running the Full Application
 
 From project root:
-
 ```bash
 streamlit run src/streamlit_sql_agent.py
 ```
 
-The UI opens in the browser.
+Streamlit automatically launches in the browser.
 
-- Pipeline steps: 
-    - Enter natural-language question
-    - Generate SQL
-    - Preview DataFrame
-    - Generate visualization code
-    - Validate
-    - Execute safely
-    - View final chart/table
+💬 Example Questions to Try
 
-# 💡 Example Questions
-
-Text/Table Output Examples:
-
+Text/Table Output
 ```
 Which warehouses are below restock threshold?
-
-Which manufacturers have highest average review rating?
-
+Which manufacturers have the highest average review rating?
 Which ZIP code has the most delayed deliveries?
+List customers who placed more than 5 orders.
+```
 
-Chart Output Examples:
 
-Plot monthly revenue trends over time
-
-What is the percentage distribution of delivery statuses?
-
-Compare average shipping cost by carrier
-
-Plot average review rating by manufacturer
+Chart Output
+```
+Plot monthly revenue trends over time.
+Show the distribution of delivery statuses as a pie chart.
+Compare average shipping cost by carrier.
+Plot average review rating by manufacturer.
 ```
 
 # 🔒 Security Measures
 
-- No exec/eval in the system
+This system includes robust safeguards:
 
-- No uncontrolled imports
+❌ No exec / eval
 
-- Code runner is sandboxed
+❌ No filesystem access
 
-- No filesystem writes
+❌ No subprocess commands
 
-- No shell commands
+✔ Python REPL sandbox
 
-# 🧾 Submission Requirements — All Satisfied
+✔ Whitelisted imports
 
-✔ src/ directory included
+✔ Strict code validator
 
-✔ doc/ directory with README
-
-✔ requirements.txt included
-
-✔ .env.example included
-
-✔ Jupyter notebook included
-
-✔ Agents separated into multiple files
-
-✔ Streamlit UI included
-
-✔ Fully functional multi-agent architecture
+✔ Safe Matplotlib extraction

@@ -41,6 +41,7 @@ Your job:
 - Generate a COMPLETE, STANDALONE Python script that:
   - Imports necessary modules.
   - Reconstructs `df` from `_df_json`.
+  - depend on the data and given user question determine the type of chart that is best to visualise it, generate code for that.
   - Builds exactly ONE visualization (matplotlib or plotly).
   - Does NOT rely on any external state except `_df_json`.
 
